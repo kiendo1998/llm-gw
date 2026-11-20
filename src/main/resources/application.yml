@@ -2,7 +2,7 @@ spring:
   application:
     name: llm-gw
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/llmgw}
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/llmgw}
     username: ${DB_USER:llmgw}
     password: ${DB_PASSWORD:llmgw}
   jpa:

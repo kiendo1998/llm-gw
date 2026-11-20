@@ -34,7 +34,7 @@ Các biến cấu hình chính:
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `DB_URL` | `jdbc:postgresql://localhost:5432/llmgw` | PostgreSQL JDBC URL |
+| `DB_URL` | `jdbc:postgresql://localhost:5433/llmgw` | PostgreSQL JDBC URL |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka brokers |
 | `LLM_URL` | `http://localhost:8081/v1/tasks` | API nhận task của LLM |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | URL LLM dùng để callback |
