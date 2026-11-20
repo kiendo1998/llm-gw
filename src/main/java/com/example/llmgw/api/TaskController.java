@@ -5,9 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
 import java.net.URI;
 import java.util.UUID;
 
@@ -22,10 +20,10 @@ public class TaskController {
         this.objectMapper = objectMapper;
     }
 
-    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    ResponseEntity<TaskResponse> submit(@RequestPart("file") @NotNull MultipartFile file,
-                                        @RequestHeader(value = "Idempotency-Key", required = false) String key) throws IOException {
-        var task = taskService.submit(file.getBytes(), key);
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<TaskResponse> submit(@RequestBody @NotNull String json,
+                                        @RequestHeader(value = "Idempotency-Key", required = false) String key) {
+        var task = taskService.submit(json, key);
         return ResponseEntity.accepted().location(URI.create("/api/v1/tasks/" + task.getId()))
                 .body(TaskResponse.from(task, objectMapper));
     }

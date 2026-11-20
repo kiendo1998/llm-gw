@@ -1,6 +1,6 @@
 # llm-gw
 
-Gateway bất đồng bộ nhận file JSON từ hệ thống A, xếp task qua Kafka, gửi đến LLM và nhận lại file JSON qua callback.
+Gateway bất đồng bộ nhận nội dung JSON từ hệ thống A, xếp task qua Kafka, gửi JSON đến LLM và nhận lại JSON qua callback.
 
 ## Stack
 
@@ -12,10 +12,10 @@ Gateway bất đồng bộ nhận file JSON từ hệ thống A, xếp task qua 
 
 ## Luồng xử lý
 
-1. A gọi `POST /api/v1/tasks` với multipart field `file` và tùy chọn header `Idempotency-Key`.
+1. A gọi `POST /api/v1/tasks` với body `application/json` và tùy chọn header `Idempotency-Key`.
 2. Gateway lưu JSON và task `QUEUED` trong PostgreSQL, đồng thời ghi request event vào outbox.
 3. Outbox phát `{taskId,status}` lên `llm.task.requested.v1`.
-4. Consumer chiếm một trong đúng 5 slot toàn cục trong PostgreSQL rồi gửi multipart (`taskId`, `callbackUrl`, `file`) tới `LLM_URL`.
+4. Consumer chiếm một trong đúng 5 slot toàn cục trong PostgreSQL rồi gửi JSON (`taskId`, `callbackUrl`, `input`) tới `LLM_URL`.
 5. LLM trả HTTP 2xx để xác nhận đã nhận. Sau khi xử lý, LLM gọi callback với file output JSON.
 6. Gateway lưu kết quả, giải phóng slot và phát event gồm kết quả lên `llm.task.completed.v1`.
 
@@ -48,7 +48,8 @@ Gửi task:
 ```bash
 curl -i -X POST http://localhost:8080/api/v1/tasks \
   -H 'Idempotency-Key: order-123' \
-  -F 'file=@input.json;type=application/json'
+  -H 'Content-Type: application/json' \
+  --data-binary '@input.json'
 ```
 
 Tra cứu trạng thái và kết quả:
@@ -62,7 +63,8 @@ Callback từ LLM:
 
 ```bash
 curl -i -X POST http://localhost:8080/api/v1/llm/callbacks/{taskId} \
-  -F 'file=@output.json;type=application/json'
+  -H 'Content-Type: application/json' \
+  --data-binary '@output.json'
 ```
 
 `GET /result` trả `202 Accepted` khi chưa có kết quả và `200 OK` cùng JSON khi đã hoàn tất. Callback là idempotent sau lần hoàn tất đầu tiên. Với production, đặt gateway sau mTLS/API gateway hoặc bổ sung chữ ký callback theo cơ chế xác thực của LLM.

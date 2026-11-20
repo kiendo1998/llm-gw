@@ -8,7 +8,6 @@ import jakarta.persistence.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 @Service
@@ -26,8 +25,7 @@ public class TaskService {
     }
 
     @Transactional
-    public LlmTask submit(byte[] bytes, String idempotencyKey) {
-        var json = new String(bytes, StandardCharsets.UTF_8);
+    public LlmTask submit(String json, String idempotencyKey) {
         try { mapper.readTree(json); } catch (Exception e) { throw new IllegalArgumentException("File is not valid JSON", e); }
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             var existing = tasks.findByClientRequestId(idempotencyKey);
@@ -42,8 +40,7 @@ public class TaskService {
     public LlmTask get(UUID id) { return tasks.findById(id).orElseThrow(() -> new EntityNotFoundException("Task not found: " + id)); }
 
     @Transactional
-    public void complete(UUID id, byte[] bytes) {
-        var output = new String(bytes, StandardCharsets.UTF_8);
+    public void complete(UUID id, String output) {
         try { mapper.readTree(output); } catch (Exception e) { throw new IllegalArgumentException("Output file is not valid JSON", e); }
         var task = get(id);
         if (task.getStatus() == TaskStatus.COMPLETED) return;

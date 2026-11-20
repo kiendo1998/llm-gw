@@ -4,9 +4,7 @@ import com.example.llmgw.service.TaskService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
 import java.util.UUID;
 
 @RestController
@@ -16,9 +14,9 @@ public class LlmCallbackController {
 
     public LlmCallbackController(TaskService taskService) { this.taskService = taskService; }
 
-    @PostMapping(value = "/{taskId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    ResponseEntity<Void> callback(@PathVariable UUID taskId, @RequestPart("file") MultipartFile file) throws IOException {
-        taskService.complete(taskId, file.getBytes());
+    @PostMapping(value = "/{taskId}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<Void> callback(@PathVariable UUID taskId, @RequestBody String json) {
+        taskService.complete(taskId, json);
         return ResponseEntity.noContent().build();
     }
 }

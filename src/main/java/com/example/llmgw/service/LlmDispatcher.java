@@ -2,15 +2,12 @@ package com.example.llmgw.service;
 
 import com.example.llmgw.config.GatewayProperties;
 import com.example.llmgw.domain.TaskStatus;
-import org.springframework.core.io.ByteArrayResource;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.MediaType;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
 
@@ -19,9 +16,12 @@ public class LlmDispatcher {
     private final TaskService taskService;
     private final WebClient llmWebClient;
     private final GatewayProperties properties;
+    private final ObjectMapper mapper;
 
-    public LlmDispatcher(TaskService taskService, WebClient llmWebClient, GatewayProperties properties) {
-        this.taskService = taskService; this.llmWebClient = llmWebClient; this.properties = properties;
+    public LlmDispatcher(TaskService taskService, WebClient llmWebClient, GatewayProperties properties,
+                         ObjectMapper mapper) {
+        this.taskService = taskService; this.llmWebClient = llmWebClient;
+        this.properties = properties; this.mapper = mapper;
     }
 
     @KafkaListener(topics = "${gateway.kafka.request-topic}", groupId = "llm-gw-dispatcher", concurrency = "6")
@@ -29,15 +29,13 @@ public class LlmDispatcher {
         var taskId = UUID.fromString(event.get("taskId").toString());
         var task = taskService.claimSlot(taskId);
         if (task.getStatus() != TaskStatus.DISPATCHING) return;
-        var parts = new LinkedMultiValueMap<String, Object>();
-        parts.add("taskId", taskId.toString());
-        parts.add("callbackUrl", properties.publicBaseUrl() + "/api/v1/llm/callbacks/" + taskId);
-        parts.add("file", new ByteArrayResource(task.getInputJson().getBytes(StandardCharsets.UTF_8)) {
-            @Override public String getFilename() { return taskId + ".json"; }
-        });
         try {
-            llmWebClient.post().contentType(MediaType.MULTIPART_FORM_DATA)
-                    .body(BodyInserters.fromMultipartData(parts)).retrieve().toBodilessEntity()
+            var body = mapper.createObjectNode()
+                    .put("taskId", taskId.toString())
+                    .put("callbackUrl", properties.publicBaseUrl() + "/api/v1/llm/callbacks/" + taskId)
+                    .set("input", mapper.readTree(task.getInputJson()));
+            llmWebClient.post().contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(body).retrieve().toBodilessEntity()
                     .block(properties.llm().timeout());
             taskService.markProcessing(taskId);
         } catch (Exception e) {
