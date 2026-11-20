@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: llm-gw
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/llmgw}
+    username: ${DB_USER:llmgw}
+    password: ${DB_PASSWORD:llmgw}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      auto-offset-reset: earliest
+      properties:
+        spring.json.trusted.packages: "java.util,java.lang"
+    listener:
+      ack-mode: record
+  servlet:
+    multipart:
+      max-file-size: ${MAX_JSON_FILE_SIZE:10MB}
+      max-request-size: ${MAX_JSON_FILE_SIZE:10MB}
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+gateway:
+  public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
+  llm:
+    url: ${LLM_URL:http://localhost:8081/v1/tasks}
+    timeout: ${LLM_DISPATCH_TIMEOUT:30s}
+    max-in-flight: 5
+  kafka:
+    request-topic: ${KAFKA_REQUEST_TOPIC:llm.task.requested.v1}
+    result-topic: ${KAFKA_RESULT_TOPIC:llm.task.completed.v1}
