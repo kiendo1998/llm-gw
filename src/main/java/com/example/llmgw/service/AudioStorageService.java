@@ -1,6 +1,5 @@
 package com.example.llmgw.service;
 
-import com.example.llmgw.api.audio.AudioChunkResponse;
 import com.example.llmgw.config.AudioStorageProperties;
 import com.example.llmgw.domain.*;
 import com.example.llmgw.repository.*;
@@ -42,7 +41,7 @@ public class AudioStorageService {
     }
 
     @Transactional
-    public AudioChunkResponse storeChunk(UUID id, int sequence, InputStream input) {
+    public StoredChunk storeChunk(UUID id, int sequence, InputStream input) {
         if (sequence < 0) throw new IllegalArgumentException("Chunk sequence must be >= 0");
         var upload = uploads.findByIdForUpdate(id)
                 .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
@@ -52,7 +51,7 @@ public class AudioStorageService {
         var existing = chunks.findByUploadIdAndSequenceNumber(id, sequence);
         if (existing.isPresent()) {
             var chunk = existing.get();
-            return new AudioChunkResponse(id, sequence, chunk.getSizeBytes(), chunk.getSha256(), true);
+            return new StoredChunk(chunk.getSizeBytes(), chunk.getSha256(), true);
         }
 
         var partDirectory = uploadDirectory(id).resolve(".parts");
@@ -70,7 +69,7 @@ public class AudioStorageService {
             var sha256 = HexFormat.of().formatHex(digest.digest());
             chunks.save(AudioChunk.create(id, sequence, size, sha256, target.toAbsolutePath().toString()));
             upload.addChunk(size);
-            return new AudioChunkResponse(id, sequence, size, sha256, false);
+            return new StoredChunk(size, sha256, false);
         } catch (IOException | NoSuchAlgorithmException e) {
             try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
             throw new IllegalStateException("Cannot store audio chunk", e);
@@ -79,6 +78,8 @@ public class AudioStorageService {
             throw e;
         }
     }
+
+    public record StoredChunk(long sizeBytes, String sha256, boolean duplicate) {}
 
     @Transactional
     public AudioUpload complete(UUID id, int lastSequence) {

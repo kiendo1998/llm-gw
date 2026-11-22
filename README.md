@@ -87,48 +87,42 @@ Nếu dispatch thất bại, result event có `status=FAILED` và trường `err
 
 ## Audio upload dạng byte stream
 
-Audio được upload theo nhiều HTTP request, phù hợp trường hợp phía gửi đẩy một đoạn mới mỗi 5 phút. Server đọc thẳng request stream xuống ổ đĩa, không giữ toàn bộ chunk trong RAM.
+Chỉ có một API `POST /api/v1/audio`. Audio được gửi qua nhiều request tới cùng API, phù hợp khi phía gửi đẩy một đoạn mới mỗi 5 phút. Server stream thẳng request xuống disk, không giữ toàn bộ chunk trong RAM.
 
-- Mỗi upload có một `audioId` lưu trong PostgreSQL.
-- Chunk được đánh số liên tục từ `0` và hỗ trợ retry idempotent theo `(audioId, sequence)`.
-- Trong lúc upload, chunk nằm tại `{AUDIO_STORAGE_ROOT}/{audioId}/.parts/`.
-- Khi gọi complete, gateway kiểm tra đủ chunk `0..lastSequence`, ghép chúng theo thứ tự và tạo file `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`.
-- Tên file gốc được giữ lại nhưng phần đường dẫn từ client bị loại bỏ để tránh path traversal.
-- Mặc định mỗi chunk tối đa 512 MiB; đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
+Request đầu tiên không có `X-Audio-Id`; gateway tạo ID và trả về trong JSON. Request tiếp theo gửi lại ID này. Sequence bắt đầu từ `0`. Request cuối đặt `X-Upload-Complete: true`; gateway kiểm tra đủ chunk rồi ghép file tại `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`.
 
-Tạo phiên upload:
+Chunk đầu tiên:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/audio-uploads \
-  -H 'Content-Type: application/json' \
-  -d '{"originalFilename":"meeting.wav","contentType":"audio/wav"}'
+curl -sS -X POST http://localhost:8080/api/v1/audio \
+  -H 'Content-Type: application/octet-stream' \
+  -H 'X-File-Name: meeting.wav' \
+  -H 'X-Content-Type: audio/wav' \
+  -H 'X-Chunk-Sequence: 0' \
+  --data-binary '@meeting-part-000.wav'
 ```
 
-Gửi từng đoạn byte. Phía gửi tăng `sequence` sau mỗi 5 phút:
+Lấy `audioId` trong response rồi gửi chunk tiếp theo sau 5 phút:
 
 ```bash
-curl -sS -X PUT http://localhost:8080/api/v1/audio-uploads/{audioId}/chunks/0 \
+curl -sS -X POST http://localhost:8080/api/v1/audio \
   -H 'Content-Type: application/octet-stream' \
-  --data-binary '@meeting-part-000.wav'
-
-curl -sS -X PUT http://localhost:8080/api/v1/audio-uploads/{audioId}/chunks/1 \
-  -H 'Content-Type: application/octet-stream' \
+  -H 'X-Audio-Id: {audioId}' \
+  -H 'X-Chunk-Sequence: 1' \
   --data-binary '@meeting-part-001.wav'
 ```
 
-Sau đoạn cuối, yêu cầu ghép file:
+Chunk cuối cùng dùng chính API đó và thêm header complete:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/audio-uploads/{audioId}/complete \
-  -H 'Content-Type: application/json' \
-  -d '{"lastSequence":1}'
+curl -sS -X POST http://localhost:8080/api/v1/audio \
+  -H 'Content-Type: application/octet-stream' \
+  -H 'X-Audio-Id: {audioId}' \
+  -H 'X-Chunk-Sequence: 2' \
+  -H 'X-Upload-Complete: true' \
+  --data-binary '@meeting-part-002.wav'
 ```
 
-Xem metadata hoặc tải/stream file đã hoàn tất:
-
-```bash
-curl -sS http://localhost:8080/api/v1/audio-uploads/{audioId}
-curl -OJ http://localhost:8080/api/v1/audio-uploads/{audioId}/content
-```
+Retry cùng `audioId + sequence` là idempotent. Tên file gốc được giữ lại; mặc định mỗi chunk tối đa 512 MiB và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
 
 Thư mục mặc định là `./data/audio` tính từ thư mục chạy ứng dụng. Production nên mount một persistent volume và đặt `AUDIO_STORAGE_ROOT` thành đường dẫn tuyệt đối.
