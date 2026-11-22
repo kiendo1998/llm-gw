@@ -20,10 +20,11 @@ public class AudioStorageService {
     private final AudioUploadRepository uploads;
     private final AudioChunkRepository chunks;
     private final AudioStorageProperties properties;
+    private final OutboxRepository outbox;
 
     public AudioStorageService(AudioUploadRepository uploads, AudioChunkRepository chunks,
-                               AudioStorageProperties properties) {
-        this.uploads = uploads; this.chunks = chunks; this.properties = properties;
+                               AudioStorageProperties properties, OutboxRepository outbox) {
+        this.uploads = uploads; this.chunks = chunks; this.properties = properties; this.outbox = outbox;
     }
 
     @Transactional
@@ -38,6 +39,28 @@ public class AudioStorageService {
     @Transactional(readOnly = true)
     public AudioUpload get(UUID id) {
         return uploads.findById(id).orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
+    }
+
+    @Transactional
+    public AudioUpload enqueue(UUID id) {
+        var upload = uploads.findByIdForUpdate(id)
+                .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
+        upload.queued();
+        var payload = "{\"audioId\":\"" + id + "\"}";
+        outbox.save(OutboxEvent.create(properties.kafka().topic(), id, payload));
+        return upload;
+    }
+
+    @Transactional
+    public void markProcessing(UUID id) {
+        var upload = uploads.findByIdForUpdate(id)
+                .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
+        if (upload.getStatus() == AudioUploadStatus.QUEUED) upload.processing();
+    }
+
+    @Transactional
+    public void fail(UUID id, String error) {
+        uploads.findByIdForUpdate(id).ifPresent(upload -> upload.failed(error));
     }
 
     @Transactional
@@ -62,7 +85,7 @@ public class AudioStorageService {
             long size;
             try (var output = new BufferedOutputStream(Files.newOutputStream(temp, StandardOpenOption.CREATE_NEW));
                  var digestInput = new DigestInputStream(input, digest)) {
-                size = copyWithLimit(digestInput, output, properties.maxChunkBytes());
+                size = copyWithLimit(digestInput, output, properties.storage().maxChunkBytes());
             }
             var target = partDirectory.resolve(sequence + ".part");
             Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
@@ -98,6 +121,17 @@ public class AudioStorageService {
 
         var directory = uploadDirectory(id);
         var target = directory.resolve(upload.getOriginalFilename());
+        if (storedChunks.size() == 1) {
+            try {
+                var source = Path.of(storedChunks.getFirst().getStoragePath());
+                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                Files.deleteIfExists(source.getParent());
+                upload.complete(lastSequence, target.toAbsolutePath().toString());
+                return upload;
+            } catch (IOException e) {
+                throw new IllegalStateException("Cannot finalize audio file", e);
+            }
+        }
         var temp = directory.resolve(upload.getOriginalFilename() + ".assembling");
         try (var output = new BufferedOutputStream(Files.newOutputStream(temp,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING))) {
@@ -127,7 +161,7 @@ public class AudioStorageService {
     }
 
     private Path uploadDirectory(UUID id) {
-        return properties.root().toAbsolutePath().normalize().resolve(id.toString());
+        return properties.storage().root().toAbsolutePath().normalize().resolve(id.toString());
     }
 
     private String safeFilename(String original) {

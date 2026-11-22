@@ -85,44 +85,42 @@ Result topic (`llm.task.completed.v1`):
 
 Nếu dispatch thất bại, result event có `status=FAILED` và trường `error`.
 
-## Audio upload dạng byte stream
+## Audio file storage
 
-Chỉ có một API `POST /api/v1/audio`. Audio được gửi qua nhiều request tới cùng API, phù hợp khi phía gửi đẩy một đoạn mới mỗi 5 phút. Server stream thẳng request xuống disk, không giữ toàn bộ chunk trong RAM.
+Audio có đúng ba API: upload, xem trạng thái và download. Request upload được stream thẳng xuống disk nên hỗ trợ file vài trăm MB mà không giữ toàn bộ nội dung trong RAM.
 
-Request đầu tiên không có `X-Audio-Id`; gateway tạo ID và trả về trong JSON. Request tiếp theo gửi lại ID này. Sequence bắt đầu từ `0`. Request cuối đặt `X-Upload-Complete: true`; gateway kiểm tra đủ chunk rồi ghép file tại `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`.
-
-Chunk đầu tiên:
+Mặc định gateway lưu file ngay và chỉ trả response khi hoàn tất (`async=false`):
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/audio \
+curl -sS -X POST 'http://localhost:8080/api/v1/audio' \
   -H 'Content-Type: application/octet-stream' \
   -H 'X-File-Name: meeting.wav' \
   -H 'X-Content-Type: audio/wav' \
-  -H 'X-Chunk-Sequence: 0' \
-  --data-binary '@meeting-part-000.wav'
+  --data-binary '@meeting.wav'
 ```
 
-Lấy `audioId` trong response rồi gửi chunk tiếp theo sau 5 phút:
+Chế độ hàng đợi trả `202 Accepted` sau khi nhận file tạm, sau đó Kafka consumer hoàn tất việc lưu file:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/audio \
+curl -sS -X POST 'http://localhost:8080/api/v1/audio?async=true' \
   -H 'Content-Type: application/octet-stream' \
-  -H 'X-Audio-Id: {audioId}' \
-  -H 'X-Chunk-Sequence: 1' \
-  --data-binary '@meeting-part-001.wav'
+  -H 'X-File-Name: meeting.wav' \
+  -H 'X-Content-Type: audio/wav' \
+  --data-binary '@meeting.wav'
 ```
 
-Chunk cuối cùng dùng chính API đó và thêm header complete:
+Kiểm tra trạng thái bằng `audioId` trong response:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/audio \
-  -H 'Content-Type: application/octet-stream' \
-  -H 'X-Audio-Id: {audioId}' \
-  -H 'X-Chunk-Sequence: 2' \
-  -H 'X-Upload-Complete: true' \
-  --data-binary '@meeting-part-002.wav'
+curl -sS http://localhost:8080/api/v1/audio/{audioId}/status
 ```
 
-Retry cùng `audioId + sequence` là idempotent. Tên file gốc được giữ lại; mặc định mỗi chunk tối đa 512 MiB và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
+Khi status là `COMPLETED`, download file:
+
+```bash
+curl -OJ http://localhost:8080/api/v1/audio/{audioId}/download
+```
+
+File được lưu tại `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`. Giới hạn mặc định là 512 MiB mỗi file và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
 
 Thư mục mặc định là `./data/audio` tính từ thư mục chạy ứng dụng. Production nên mount một persistent volume và đặt `AUDIO_STORAGE_ROOT` thành đường dẫn tuyệt đối.

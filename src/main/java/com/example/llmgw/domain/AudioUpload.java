@@ -19,6 +19,7 @@ public class AudioUpload {
     @Column(name = "created_at") private Instant createdAt;
     @Column(name = "updated_at") private Instant updatedAt;
     @Column(name = "completed_at") private Instant completedAt;
+    @Column(name = "error_message") private String errorMessage;
     @Version private long version;
 
     protected AudioUpload() {}
@@ -38,6 +39,10 @@ public class AudioUpload {
         totalBytes += size; chunkCount++; updatedAt = Instant.now();
     }
 
+    public void queued() { status = AudioUploadStatus.QUEUED; updatedAt = Instant.now(); }
+    public void processing() { status = AudioUploadStatus.PROCESSING; updatedAt = Instant.now(); }
+    public void failed(String error) { status = AudioUploadStatus.FAILED; errorMessage = error; updatedAt = Instant.now(); }
+
     public void complete(int lastSequence, String path) {
         this.lastSequence = lastSequence; this.storagePath = path;
         this.status = AudioUploadStatus.COMPLETED;
@@ -55,4 +60,5 @@ public class AudioUpload {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public Instant getCompletedAt() { return completedAt; }
+    public String getErrorMessage() { return errorMessage; }
 }

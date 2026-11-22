@@ -41,3 +41,5 @@ audio:
   storage:
     root: ${AUDIO_STORAGE_ROOT:./data/audio}
     max-chunk-bytes: ${AUDIO_MAX_CHUNK_BYTES:536870912}
+  kafka:
+    topic: ${AUDIO_KAFKA_TOPIC:audio.storage.requested.v1}

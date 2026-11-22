@@ -26,6 +26,11 @@ public class AppConfig {
     }
 
     @Bean
+    NewTopic audioStorageTopic(AudioStorageProperties p) {
+        return TopicBuilder.name(p.kafka().topic()).partitions(3).replicas(1).build();
+    }
+
+    @Bean
     DefaultErrorHandler kafkaErrorHandler() {
         // A busy global slot is normal back-pressure. Keep the Kafka record pending until one is free.
         return new DefaultErrorHandler(new FixedBackOff(1_000L, Long.MAX_VALUE));
