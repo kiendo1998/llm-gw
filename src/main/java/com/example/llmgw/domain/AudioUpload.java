@@ -14,6 +14,7 @@ public class AudioUpload {
     @Enumerated(EnumType.STRING) private AudioUploadStatus status;
     @Column(name = "total_bytes") private long totalBytes;
     @Column(name = "chunk_count") private int chunkCount;
+    @Column(name = "expected_chunks", nullable = false) private int expectedChunks;
     @Column(name = "last_sequence") private Integer lastSequence;
     @Column(name = "storage_path") private String storagePath;
     @Column(name = "created_at") private Instant createdAt;
@@ -24,12 +25,13 @@ public class AudioUpload {
 
     protected AudioUpload() {}
 
-    public static AudioUpload create(String filename, String contentType) {
+    public static AudioUpload create(UUID id, String filename, String contentType, int expectedChunks) {
         var upload = new AudioUpload();
-        upload.id = UUID.randomUUID();
+        upload.id = id;
         upload.originalFilename = filename;
         upload.contentType = contentType;
         upload.status = AudioUploadStatus.UPLOADING;
+        upload.expectedChunks = expectedChunks;
         upload.createdAt = upload.updatedAt = Instant.now();
         return upload;
     }
@@ -55,6 +57,7 @@ public class AudioUpload {
     public AudioUploadStatus getStatus() { return status; }
     public long getTotalBytes() { return totalBytes; }
     public int getChunkCount() { return chunkCount; }
+    public int getExpectedChunks() { return expectedChunks; }
     public Integer getLastSequence() { return lastSequence; }
     public String getStoragePath() { return storagePath; }
     public Instant getCreatedAt() { return createdAt; }

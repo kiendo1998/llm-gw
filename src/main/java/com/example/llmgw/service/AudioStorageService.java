@@ -6,6 +6,7 @@ import com.example.llmgw.repository.*;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.io.*;
 import java.nio.file.*;
@@ -28,10 +29,22 @@ public class AudioStorageService {
     }
 
     @Transactional
-    public AudioUpload create(String originalFilename, String contentType) {
+    public AudioUpload createOrGet(UUID requestedId, String originalFilename, String contentType, int expectedChunks) {
+        if (expectedChunks < 1 || expectedChunks > 100_000) {
+            throw new IllegalArgumentException("X-Total-Chunks must be between 1 and 100000");
+        }
         var filename = safeFilename(originalFilename);
         var type = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
-        var upload = uploads.save(AudioUpload.create(filename, type));
+        var id = requestedId == null ? UUID.randomUUID() : requestedId;
+        var existing = uploads.findById(id);
+        if (existing.isPresent()) {
+            var upload = existing.get();
+            if (!upload.getOriginalFilename().equals(filename) || upload.getExpectedChunks() != expectedChunks) {
+                throw new IllegalArgumentException("Audio ID already exists with different file metadata");
+            }
+            return upload;
+        }
+        var upload = uploads.save(AudioUpload.create(id, filename, type, expectedChunks));
         createDirectories(uploadDirectory(upload.getId()).resolve(".parts"));
         return upload;
     }
@@ -40,6 +53,21 @@ public class AudioStorageService {
     public AudioUpload get(UUID id) {
         return uploads.findById(id).orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
     }
+
+    @Transactional(readOnly = true)
+    public UploadProgress progress(UUID id) {
+        var upload = get(id);
+        var stored = chunks.findByUploadIdOrderBySequenceNumber(id);
+        int next = 0;
+        for (var chunk : stored) {
+            if (chunk.getSequenceNumber() == next) next++;
+            else if (chunk.getSequenceNumber() > next) break;
+        }
+        var complete = stored.size() == upload.getExpectedChunks() && next == upload.getExpectedChunks();
+        return new UploadProgress(upload, next, complete);
+    }
+
+    public record UploadProgress(AudioUpload upload, int nextSequence, boolean complete) {}
 
     @Transactional
     public AudioUpload enqueue(UUID id) {
@@ -68,13 +96,16 @@ public class AudioStorageService {
         if (sequence < 0) throw new IllegalArgumentException("Chunk sequence must be >= 0");
         var upload = uploads.findByIdForUpdate(id)
                 .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
-        if (upload.getStatus() != AudioUploadStatus.UPLOADING) {
-            throw new IllegalStateException("Audio upload is already completed");
-        }
         var existing = chunks.findByUploadIdAndSequenceNumber(id, sequence);
         if (existing.isPresent()) {
             var chunk = existing.get();
             return new StoredChunk(chunk.getSizeBytes(), chunk.getSha256(), true);
+        }
+        if (upload.getStatus() != AudioUploadStatus.UPLOADING) {
+            throw new IllegalStateException("Audio upload no longer accepts new chunks");
+        }
+        if (sequence >= upload.getExpectedChunks()) {
+            throw new IllegalArgumentException("Chunk sequence must be smaller than X-Total-Chunks");
         }
 
         var partDirectory = uploadDirectory(id).resolve(".parts");
@@ -158,6 +189,15 @@ public class AudioStorageService {
         var path = Path.of(upload.getStoragePath());
         if (!Files.isRegularFile(path)) throw new EntityNotFoundException("Stored audio file is missing");
         return path;
+    }
+
+    @Scheduled(fixedDelayString = "${audio.upload.stale-scan-delay:1h}")
+    @Transactional
+    public void expireStaleUploads() {
+        var cutoff = java.time.Instant.now().minus(properties.upload().staleAfter());
+        for (var upload : uploads.findByStatusAndUpdatedAtBefore(AudioUploadStatus.UPLOADING, cutoff)) {
+            upload.failed("Upload incomplete and inactive for " + properties.upload().staleAfter());
+        }
     }
 
     private Path uploadDirectory(UUID id) {

@@ -43,3 +43,5 @@ audio:
     max-chunk-bytes: ${AUDIO_MAX_CHUNK_BYTES:536870912}
   kafka:
     topic: ${AUDIO_KAFKA_TOPIC:audio.storage.requested.v1}
+  upload:
+    stale-after: ${AUDIO_UPLOAD_STALE_AFTER:24h}

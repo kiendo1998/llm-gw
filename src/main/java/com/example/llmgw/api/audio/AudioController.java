@@ -20,19 +20,31 @@ public class AudioController {
     @PostMapping(consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<AudioUploadResult> upload(
             @RequestParam(name = "async", defaultValue = "false") boolean async,
+            @RequestHeader(value = "X-Audio-Id", required = false) UUID requestedAudioId,
             @RequestHeader("X-File-Name") String originalFilename,
             @RequestHeader(value = "X-Content-Type", defaultValue = "application/octet-stream") String contentType,
+            @RequestHeader(value = "X-Chunk-Sequence", defaultValue = "0") int sequence,
+            @RequestHeader(value = "X-Total-Chunks", defaultValue = "1") int totalChunks,
             HttpServletRequest request) throws IOException {
-        var upload = audioStorage.create(originalFilename, contentType);
-        audioStorage.storeChunk(upload.getId(), 0, request.getInputStream());
-        upload = async ? audioStorage.enqueue(upload.getId()) : audioStorage.complete(upload.getId(), 0);
-        var response = AudioUploadResult.from(upload, async);
-        return async ? ResponseEntity.accepted().body(response) : ResponseEntity.ok(response);
+        var upload = audioStorage.createOrGet(requestedAudioId, originalFilename, contentType, totalChunks);
+        var stored = audioStorage.storeChunk(upload.getId(), sequence, request.getInputStream());
+        var progress = audioStorage.progress(upload.getId());
+        upload = progress.upload();
+        if (upload.getStatus() == com.example.llmgw.domain.AudioUploadStatus.UPLOADING && progress.complete()) {
+            upload = async ? audioStorage.enqueue(upload.getId())
+                    : audioStorage.complete(upload.getId(), totalChunks - 1);
+            progress = audioStorage.progress(upload.getId());
+        }
+        var response = AudioUploadResult.from(upload, progress.nextSequence(), async,
+                sequence, stored.duplicate());
+        if (!progress.complete() || async) return ResponseEntity.accepted().body(response);
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping(value = "/{audioId}/status", produces = MediaType.APPLICATION_JSON_VALUE)
     AudioStatusResponse status(@PathVariable UUID audioId) {
-        return AudioStatusResponse.from(audioStorage.get(audioId));
+        var progress = audioStorage.progress(audioId);
+        return AudioStatusResponse.from(progress.upload(), progress.nextSequence());
     }
 
     @GetMapping("/{audioId}/download")
