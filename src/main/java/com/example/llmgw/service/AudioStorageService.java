@@ -29,22 +29,20 @@ public class AudioStorageService {
     }
 
     @Transactional
-    public AudioUpload createOrGet(UUID requestedId, String originalFilename, String contentType, int expectedChunks) {
-        if (expectedChunks < 1 || expectedChunks > 100_000) {
-            throw new IllegalArgumentException("X-Total-Chunks must be between 1 and 100000");
-        }
+    public AudioUpload createOrGet(UUID requestedId, String originalFilename, String contentType) {
         var filename = safeFilename(originalFilename);
         var type = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
         var id = requestedId == null ? UUID.randomUUID() : requestedId;
         var existing = uploads.findById(id);
         if (existing.isPresent()) {
             var upload = existing.get();
-            if (!upload.getOriginalFilename().equals(filename) || upload.getExpectedChunks() != expectedChunks) {
+            if (!upload.getOriginalFilename().equals(filename)) {
                 throw new IllegalArgumentException("Audio ID already exists with different file metadata");
             }
+            upload.resume();
             return upload;
         }
-        var upload = uploads.save(AudioUpload.create(id, filename, type, expectedChunks));
+        var upload = uploads.save(AudioUpload.create(id, filename, type));
         createDirectories(uploadDirectory(upload.getId()).resolve(".parts"));
         return upload;
     }
@@ -53,21 +51,6 @@ public class AudioStorageService {
     public AudioUpload get(UUID id) {
         return uploads.findById(id).orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
     }
-
-    @Transactional(readOnly = true)
-    public UploadProgress progress(UUID id) {
-        var upload = get(id);
-        var stored = chunks.findByUploadIdOrderBySequenceNumber(id);
-        int next = 0;
-        for (var chunk : stored) {
-            if (chunk.getSequenceNumber() == next) next++;
-            else if (chunk.getSequenceNumber() > next) break;
-        }
-        var complete = stored.size() == upload.getExpectedChunks() && next == upload.getExpectedChunks();
-        return new UploadProgress(upload, next, complete);
-    }
-
-    public record UploadProgress(AudioUpload upload, int nextSequence, boolean complete) {}
 
     @Transactional
     public AudioUpload enqueue(UUID id) {
@@ -92,21 +75,13 @@ public class AudioStorageService {
     }
 
     @Transactional
-    public StoredChunk storeChunk(UUID id, int sequence, InputStream input) {
-        if (sequence < 0) throw new IllegalArgumentException("Chunk sequence must be >= 0");
+    public StoredPart storeNextPart(UUID id, InputStream input) {
         var upload = uploads.findByIdForUpdate(id)
                 .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
-        var existing = chunks.findByUploadIdAndSequenceNumber(id, sequence);
-        if (existing.isPresent()) {
-            var chunk = existing.get();
-            return new StoredChunk(chunk.getSizeBytes(), chunk.getSha256(), true);
-        }
         if (upload.getStatus() != AudioUploadStatus.UPLOADING) {
-            throw new IllegalStateException("Audio upload no longer accepts new chunks");
+            throw new IllegalStateException("Audio upload does not accept a new part yet");
         }
-        if (sequence >= upload.getExpectedChunks()) {
-            throw new IllegalArgumentException("Chunk sequence must be smaller than X-Total-Chunks");
-        }
+        var sequence = upload.getChunkCount();
 
         var partDirectory = uploadDirectory(id).resolve(".parts");
         createDirectories(partDirectory);
@@ -123,7 +98,7 @@ public class AudioStorageService {
             var sha256 = HexFormat.of().formatHex(digest.digest());
             chunks.save(AudioChunk.create(id, sequence, size, sha256, target.toAbsolutePath().toString()));
             upload.addChunk(size);
-            return new StoredChunk(size, sha256, false);
+            return new StoredPart(sequence, size, sha256);
         } catch (IOException | NoSuchAlgorithmException e) {
             try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
             throw new IllegalStateException("Cannot store audio chunk", e);
@@ -133,18 +108,14 @@ public class AudioStorageService {
         }
     }
 
-    public record StoredChunk(long sizeBytes, String sha256, boolean duplicate) {}
+    public record StoredPart(int sequence, long sizeBytes, String sha256) {}
 
     @Transactional
-    public AudioUpload complete(UUID id, int lastSequence) {
+    public AudioUpload completePending(UUID id) {
         var upload = uploads.findByIdForUpdate(id)
                 .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
-        if (upload.getStatus() == AudioUploadStatus.COMPLETED) return upload;
         var storedChunks = chunks.findByUploadIdOrderBySequenceNumber(id);
-        if (storedChunks.size() != lastSequence + 1) {
-            throw new IllegalStateException("Expected chunks 0.." + lastSequence + " but found " + storedChunks.size());
-        }
-        for (int i = 0; i <= lastSequence; i++) {
+        for (int i = 0; i < storedChunks.size(); i++) {
             if (storedChunks.get(i).getSequenceNumber() != i) {
                 throw new IllegalStateException("Missing audio chunk sequence " + i);
             }
@@ -152,34 +123,30 @@ public class AudioStorageService {
 
         var directory = uploadDirectory(id);
         var target = directory.resolve(upload.getOriginalFilename());
-        if (storedChunks.size() == 1) {
-            try {
-                var source = Path.of(storedChunks.getFirst().getStoragePath());
-                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-                Files.deleteIfExists(source.getParent());
-                upload.complete(lastSequence, target.toAbsolutePath().toString());
-                return upload;
-            } catch (IOException e) {
-                throw new IllegalStateException("Cannot finalize audio file", e);
-            }
-        }
-        var temp = directory.resolve(upload.getOriginalFilename() + ".assembling");
-        try (var output = new BufferedOutputStream(Files.newOutputStream(temp,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING))) {
-            for (var chunk : storedChunks) {
-                Files.copy(Path.of(chunk.getStoragePath()), output);
+        var firstPending = upload.getLastSequence() == null ? 0 : upload.getLastSequence() + 1;
+        var originalSize = existingSize(target);
+        try (var output = new BufferedOutputStream(Files.newOutputStream(target,
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+            for (int i = firstPending; i < storedChunks.size(); i++) {
+                Files.copy(Path.of(storedChunks.get(i).getStoragePath()), output);
             }
         } catch (IOException e) {
-            try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
-            throw new IllegalStateException("Cannot assemble audio file", e);
+            truncate(target, originalSize);
+            throw new IllegalStateException("Cannot append audio part", e);
         }
-        try {
-            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot finalize audio file", e);
-        }
-        upload.complete(lastSequence, target.toAbsolutePath().toString());
+        upload.complete(storedChunks.size() - 1, target.toAbsolutePath().toString());
         return upload;
+    }
+
+    private long existingSize(Path path) {
+        try { return Files.exists(path) ? Files.size(path) : 0; }
+        catch (IOException e) { throw new IllegalStateException("Cannot read current audio size", e); }
+    }
+
+    private void truncate(Path path, long size) {
+        try (var channel = java.nio.channels.FileChannel.open(path, StandardOpenOption.WRITE)) {
+            channel.truncate(size);
+        } catch (IOException ignored) {}
     }
 
     public Path completedFile(AudioUpload upload) {

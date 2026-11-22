@@ -9,17 +9,12 @@ public record AudioUploadResult(
         String status,
         String originalFilename,
         long totalBytes,
-        int receivedChunks,
-        int expectedChunks,
-        int nextSequence,
-        int acceptedSequence,
-        boolean duplicate,
+        int receivedParts,
+        int acceptedPart,
         boolean async
 ) {
-    public static AudioUploadResult from(AudioUpload upload, int nextSequence, boolean async,
-                                         int acceptedSequence, boolean duplicate) {
+    public static AudioUploadResult from(AudioUpload upload, int acceptedPart, boolean async) {
         return new AudioUploadResult(upload.getId(), upload.getStatus().name(), upload.getOriginalFilename(),
-                upload.getTotalBytes(), upload.getChunkCount(), upload.getExpectedChunks(), nextSequence,
-                acceptedSequence, duplicate, async);
+                upload.getTotalBytes(), upload.getChunkCount(), acceptedPart, async);
     }
 }

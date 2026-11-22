@@ -25,13 +25,13 @@ public class AudioUpload {
 
     protected AudioUpload() {}
 
-    public static AudioUpload create(UUID id, String filename, String contentType, int expectedChunks) {
+    public static AudioUpload create(UUID id, String filename, String contentType) {
         var upload = new AudioUpload();
         upload.id = id;
         upload.originalFilename = filename;
         upload.contentType = contentType;
         upload.status = AudioUploadStatus.UPLOADING;
-        upload.expectedChunks = expectedChunks;
+        upload.expectedChunks = 1;
         upload.createdAt = upload.updatedAt = Instant.now();
         return upload;
     }
@@ -39,6 +39,17 @@ public class AudioUpload {
     public void addChunk(long size) {
         if (status != AudioUploadStatus.UPLOADING) throw new IllegalStateException("Upload is already completed");
         totalBytes += size; chunkCount++; updatedAt = Instant.now();
+    }
+
+    public void resume() {
+        if (status == AudioUploadStatus.UPLOADING) return;
+        if (status != AudioUploadStatus.COMPLETED) {
+            throw new IllegalStateException("Previous audio part is still being processed");
+        }
+        status = AudioUploadStatus.UPLOADING;
+        completedAt = null;
+        errorMessage = null;
+        updatedAt = Instant.now();
     }
 
     public void queued() { status = AudioUploadStatus.QUEUED; updatedAt = Instant.now(); }

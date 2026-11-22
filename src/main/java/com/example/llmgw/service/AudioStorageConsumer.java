@@ -17,7 +17,7 @@ public class AudioStorageConsumer {
         var audioId = UUID.fromString(event.get("audioId").toString());
         try {
             audioStorage.markProcessing(audioId);
-            audioStorage.complete(audioId, 0);
+            audioStorage.completePending(audioId);
         } catch (Exception e) {
             audioStorage.fail(audioId, rootMessage(e));
         }

@@ -11,17 +11,14 @@ public record AudioStatusResponse(
         String originalFilename,
         String contentType,
         long totalBytes,
-        int receivedChunks,
-        int expectedChunks,
-        int nextSequence,
+        int receivedParts,
         String error,
         Instant createdAt,
         Instant completedAt
 ) {
-    public static AudioStatusResponse from(AudioUpload upload, int nextSequence) {
+    public static AudioStatusResponse from(AudioUpload upload) {
         return new AudioStatusResponse(upload.getId(), upload.getStatus().name(), upload.getOriginalFilename(),
-                upload.getContentType(), upload.getTotalBytes(), upload.getChunkCount(), upload.getExpectedChunks(),
-                nextSequence, upload.getErrorMessage(),
+                upload.getContentType(), upload.getTotalBytes(), upload.getChunkCount(), upload.getErrorMessage(),
                 upload.getCreatedAt(), upload.getCompletedAt());
     }
 }

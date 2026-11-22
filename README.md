@@ -87,7 +87,7 @@ Nếu dispatch thất bại, result event có `status=FAILED` và trường `err
 
 ## Audio file storage
 
-Audio có đúng ba API: upload, xem trạng thái và download. Request được stream thẳng xuống disk, không giữ toàn bộ file trong RAM. Với điện thoại/mạng không ổn định, nên chia **một file gốc theo byte** thành các chunk 5–20 MiB và gửi lần lượt; không gửi các file WAV được encode độc lập vì server ghép byte theo thứ tự.
+Audio có đúng ba API: upload, xem trạng thái và download. Request được stream thẳng xuống disk, không giữ toàn bộ file trong RAM. Mỗi request từ điện thoại được coi là part tiếp theo và BE tự nối vào cuối file.
 
 Mặc định gateway lưu file ngay và chỉ trả response khi hoàn tất (`async=false`):
 
@@ -121,31 +121,37 @@ Khi status là `COMPLETED`, download file:
 curl -OJ http://localhost:8080/api/v1/audio/{audioId}/download
 ```
 
-File được lưu tại `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`. Giới hạn mặc định là 512 MiB mỗi file và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
+File được lưu tại `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`. Giới hạn mặc định là 512 MiB mỗi part và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
 
 Thư mục mặc định là `./data/audio` tính từ thư mục chạy ứng dụng. Production nên mount một persistent volume và đặt `AUDIO_STORAGE_ROOT` thành đường dẫn tuyệt đối.
 
 ### Upload tiếp tục được khi điện thoại mất mạng hoặc có cuộc gọi
 
-Điện thoại cần tự sinh một UUID và giữ UUID đó cho toàn bộ file. Mọi chunk đều gọi lại đúng API upload, cùng `X-Audio-Id`, tên file và tổng số chunk:
+Request đầu tiên không truyền `X-Audio-Id`. BE sinh ID, lưu part đầu tiên và trả ID trong response:
 
 ```bash
-AUDIO_ID='11111111-2222-4333-8444-555555555555'
+curl -sS -X POST 'http://localhost:8080/api/v1/audio' \
+  -H 'Content-Type: application/octet-stream' \
+  -H 'X-File-Name: recording.wav' \
+  -H 'X-Content-Type: audio/wav' \
+  --data-binary '@part-1'
+```
+
+Các request sau truyền lại ID do BE trả. BE tự xác định đây là part tiếp theo và nối vào file cũ:
+
+```bash
+AUDIO_ID='id-tra-ve-tu-request-dau'
 
 curl -sS -X POST 'http://localhost:8080/api/v1/audio' \
   -H 'Content-Type: application/octet-stream' \
   -H "X-Audio-Id: $AUDIO_ID" \
   -H 'X-File-Name: recording.wav' \
   -H 'X-Content-Type: audio/wav' \
-  -H 'X-Chunk-Sequence: 0' \
-  -H 'X-Total-Chunks: 3' \
-  --data-binary '@chunk-000'
+  --data-binary '@part-2'
 ```
 
-Gửi tiếp `chunk-001`, `chunk-002` với sequence `1`, `2`. Response/status có `nextSequence` để app biết chunk tuần tự đầu tiên còn thiếu. Có thể gửi chunk lệch thứ tự; file chỉ hoàn tất khi đủ toàn bộ chunk.
-
-- Nếu kết nối đứt giữa request, chunk tạm bị bỏ và app gửi lại cùng sequence.
-- Nếu server đã nhận chunk nhưng app chưa nhận được response, gửi lại cùng sequence là idempotent; response trả `duplicate: true` và không cộng dung lượng hai lần.
-- Upload thiếu chunk giữ trạng thái `UPLOADING`; chưa thể download và chưa được đưa vào Kafka.
-- Sau 24 giờ không có hoạt động, upload thiếu được chuyển thành `FAILED`. Đổi bằng `AUDIO_UPLOAD_STALE_AFTER`, ví dụ `48h`.
-- `?async=true` chỉ đẩy metadata lên Kafka sau khi đã nhận đủ file; byte audio lớn không được đưa vào Kafka.
+- Không cần gửi sequence hoặc tổng số part.
+- Nếu kết nối đứt giữa request, BE xóa part tạm và không thay đổi file đã lưu trước đó.
+- Mỗi ID chỉ nhận tuần tự một part tại một thời điểm.
+- Với `?async=true`, request trả `202` và Kafka consumer nối part vào file; byte audio lớn không được đưa vào Kafka.
+- Nếu BE đã nối part nhưng điện thoại không nhận được response và gửi lại cùng dữ liệu, part đó có thể bị nối trùng vì request không có sequence/idempotency key.
