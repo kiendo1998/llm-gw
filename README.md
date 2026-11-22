@@ -84,3 +84,51 @@ Result topic (`llm.task.completed.v1`):
 ```
 
 Nếu dispatch thất bại, result event có `status=FAILED` và trường `error`.
+
+## Audio upload dạng byte stream
+
+Audio được upload theo nhiều HTTP request, phù hợp trường hợp phía gửi đẩy một đoạn mới mỗi 5 phút. Server đọc thẳng request stream xuống ổ đĩa, không giữ toàn bộ chunk trong RAM.
+
+- Mỗi upload có một `audioId` lưu trong PostgreSQL.
+- Chunk được đánh số liên tục từ `0` và hỗ trợ retry idempotent theo `(audioId, sequence)`.
+- Trong lúc upload, chunk nằm tại `{AUDIO_STORAGE_ROOT}/{audioId}/.parts/`.
+- Khi gọi complete, gateway kiểm tra đủ chunk `0..lastSequence`, ghép chúng theo thứ tự và tạo file `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`.
+- Tên file gốc được giữ lại nhưng phần đường dẫn từ client bị loại bỏ để tránh path traversal.
+- Mặc định mỗi chunk tối đa 512 MiB; đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
+
+Tạo phiên upload:
+
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/audio-uploads \
+  -H 'Content-Type: application/json' \
+  -d '{"originalFilename":"meeting.wav","contentType":"audio/wav"}'
+```
+
+Gửi từng đoạn byte. Phía gửi tăng `sequence` sau mỗi 5 phút:
+
+```bash
+curl -sS -X PUT http://localhost:8080/api/v1/audio-uploads/{audioId}/chunks/0 \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary '@meeting-part-000.wav'
+
+curl -sS -X PUT http://localhost:8080/api/v1/audio-uploads/{audioId}/chunks/1 \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary '@meeting-part-001.wav'
+```
+
+Sau đoạn cuối, yêu cầu ghép file:
+
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/audio-uploads/{audioId}/complete \
+  -H 'Content-Type: application/json' \
+  -d '{"lastSequence":1}'
+```
+
+Xem metadata hoặc tải/stream file đã hoàn tất:
+
+```bash
+curl -sS http://localhost:8080/api/v1/audio-uploads/{audioId}
+curl -OJ http://localhost:8080/api/v1/audio-uploads/{audioId}/content
+```
+
+Thư mục mặc định là `./data/audio` tính từ thư mục chạy ứng dụng. Production nên mount một persistent volume và đặt `AUDIO_STORAGE_ROOT` thành đường dẫn tuyệt đối.

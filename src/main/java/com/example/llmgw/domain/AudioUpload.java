@@ -1,0 +1,58 @@
+package com.example.llmgw.domain;
+
+import jakarta.persistence.*;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Entity
+@Table(name = "audio_upload")
+public class AudioUpload {
+    @Id private UUID id;
+    @Column(name = "original_filename", nullable = false) private String originalFilename;
+    @Column(name = "content_type", nullable = false) private String contentType;
+    @Enumerated(EnumType.STRING) private AudioUploadStatus status;
+    @Column(name = "total_bytes") private long totalBytes;
+    @Column(name = "chunk_count") private int chunkCount;
+    @Column(name = "last_sequence") private Integer lastSequence;
+    @Column(name = "storage_path") private String storagePath;
+    @Column(name = "created_at") private Instant createdAt;
+    @Column(name = "updated_at") private Instant updatedAt;
+    @Column(name = "completed_at") private Instant completedAt;
+    @Version private long version;
+
+    protected AudioUpload() {}
+
+    public static AudioUpload create(String filename, String contentType) {
+        var upload = new AudioUpload();
+        upload.id = UUID.randomUUID();
+        upload.originalFilename = filename;
+        upload.contentType = contentType;
+        upload.status = AudioUploadStatus.UPLOADING;
+        upload.createdAt = upload.updatedAt = Instant.now();
+        return upload;
+    }
+
+    public void addChunk(long size) {
+        if (status != AudioUploadStatus.UPLOADING) throw new IllegalStateException("Upload is already completed");
+        totalBytes += size; chunkCount++; updatedAt = Instant.now();
+    }
+
+    public void complete(int lastSequence, String path) {
+        this.lastSequence = lastSequence; this.storagePath = path;
+        this.status = AudioUploadStatus.COMPLETED;
+        this.completedAt = this.updatedAt = Instant.now();
+    }
+
+    public UUID getId() { return id; }
+    public String getOriginalFilename() { return originalFilename; }
+    public String getContentType() { return contentType; }
+    public AudioUploadStatus getStatus() { return status; }
+    public long getTotalBytes() { return totalBytes; }
+    public int getChunkCount() { return chunkCount; }
+    public Integer getLastSequence() { return lastSequence; }
+    public String getStoragePath() { return storagePath; }
+    public Instant getCreatedAt() { return createdAt; }
+    public Instant getUpdatedAt() { return updatedAt; }
+    public Instant getCompletedAt() { return completedAt; }
+}

@@ -26,10 +26,6 @@ spring:
         spring.json.use.type.headers: false
     listener:
       ack-mode: record
-  servlet:
-    multipart:
-      max-file-size: ${MAX_JSON_FILE_SIZE:10MB}
-      max-request-size: ${MAX_JSON_FILE_SIZE:10MB}
 management:
   endpoints.web.exposure.include: health,info,prometheus
 gateway:
@@ -41,3 +37,7 @@ gateway:
   kafka:
     request-topic: ${KAFKA_REQUEST_TOPIC:llm.task.requested.v1}
     result-topic: ${KAFKA_RESULT_TOPIC:llm.task.completed.v1}
+audio:
+  storage:
+    root: ${AUDIO_STORAGE_ROOT:./data/audio}
+    max-chunk-bytes: ${AUDIO_MAX_CHUNK_BYTES:536870912}
