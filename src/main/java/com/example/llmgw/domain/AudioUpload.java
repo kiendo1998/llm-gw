@@ -9,6 +9,7 @@ import java.util.UUID;
 @Table(name = "audio_upload")
 public class AudioUpload {
     @Id private UUID id;
+    @Column(name = "session_id", unique = true) private String sessionId;
     @Column(name = "original_filename", nullable = false) private String originalFilename;
     @Column(name = "content_type", nullable = false) private String contentType;
     @Enumerated(EnumType.STRING) private AudioUploadStatus status;
@@ -25,9 +26,10 @@ public class AudioUpload {
 
     protected AudioUpload() {}
 
-    public static AudioUpload create(UUID id, String filename, String contentType) {
+    public static AudioUpload create(UUID id, String sessionId, String filename, String contentType) {
         var upload = new AudioUpload();
         upload.id = id;
+        upload.sessionId = sessionId;
         upload.originalFilename = filename;
         upload.contentType = contentType;
         upload.status = AudioUploadStatus.UPLOADING;
@@ -62,7 +64,16 @@ public class AudioUpload {
         this.completedAt = this.updatedAt = Instant.now();
     }
 
+    public void progress(int lastSequence, String path, boolean allReceivedPartsApplied) {
+        this.lastSequence = lastSequence;
+        this.storagePath = path;
+        this.status = allReceivedPartsApplied ? AudioUploadStatus.COMPLETED : AudioUploadStatus.UPLOADING;
+        this.completedAt = allReceivedPartsApplied ? Instant.now() : null;
+        this.updatedAt = Instant.now();
+    }
+
     public UUID getId() { return id; }
+    public String getSessionId() { return sessionId; }
     public String getOriginalFilename() { return originalFilename; }
     public String getContentType() { return contentType; }
     public AudioUploadStatus getStatus() { return status; }

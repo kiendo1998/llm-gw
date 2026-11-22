@@ -87,16 +87,16 @@ Nếu dispatch thất bại, result event có `status=FAILED` và trường `err
 
 ## Audio file storage
 
-Audio có đúng ba API: upload, xem trạng thái và download. Request được stream thẳng xuống disk, không giữ toàn bộ file trong RAM. Mỗi request từ điện thoại được coi là part tiếp theo và BE tự nối vào cuối file.
+Audio có đúng ba API: upload, xem trạng thái và download. Request được stream thẳng xuống disk, không giữ toàn bộ file trong RAM. BE lấy session và thứ tự part từ `X-File-Name` theo mẫu `user_session_timestamp_partN.extension`.
 
 Mặc định gateway lưu file ngay và chỉ trả response khi hoàn tất (`async=false`):
 
 ```bash
 curl -sS -X POST 'http://localhost:8080/api/v1/audio' \
   -H 'Content-Type: application/octet-stream' \
-  -H 'X-File-Name: meeting.wav' \
+  -H 'X-File-Name: userad_session123_1763800000000_part1.mav' \
   -H 'X-Content-Type: audio/wav' \
-  --data-binary '@meeting.wav'
+  --data-binary '@part1.mav'
 ```
 
 Chế độ hàng đợi trả `202 Accepted` sau khi nhận file tạm, sau đó Kafka consumer hoàn tất việc lưu file:
@@ -104,54 +104,52 @@ Chế độ hàng đợi trả `202 Accepted` sau khi nhận file tạm, sau đ�
 ```bash
 curl -sS -X POST 'http://localhost:8080/api/v1/audio?async=true' \
   -H 'Content-Type: application/octet-stream' \
-  -H 'X-File-Name: meeting.wav' \
+  -H 'X-File-Name: userad_session123_1763800000000_part1.mav' \
   -H 'X-Content-Type: audio/wav' \
-  --data-binary '@meeting.wav'
+  --data-binary '@part1.mav'
 ```
 
-Kiểm tra trạng thái bằng `audioId` trong response:
+Kiểm tra trạng thái bằng session lấy từ tên file (vẫn hỗ trợ `audioId` nội bộ trong response):
 
 ```bash
-curl -sS http://localhost:8080/api/v1/audio/{audioId}/status
+curl -sS http://localhost:8080/api/v1/audio/session123/status
 ```
 
 Khi status là `COMPLETED`, download file:
 
 ```bash
-curl -OJ http://localhost:8080/api/v1/audio/{audioId}/download
+curl -OJ http://localhost:8080/api/v1/audio/session123/download
 ```
 
-File được lưu tại `{AUDIO_STORAGE_ROOT}/{audioId}/{originalFilename}`. Giới hạn mặc định là 512 MiB mỗi part và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
+File được lưu tại `{AUDIO_STORAGE_ROOT}/{sessionId}/user_session_timestamp.extension`. Giới hạn mặc định là 512 MiB mỗi part và có thể đổi bằng `AUDIO_MAX_CHUNK_BYTES`.
 
 Thư mục mặc định là `./data/audio` tính từ thư mục chạy ứng dụng. Production nên mount một persistent volume và đặt `AUDIO_STORAGE_ROOT` thành đường dẫn tuyệt đối.
 
 ### Upload tiếp tục được khi điện thoại mất mạng hoặc có cuộc gọi
 
-Request đầu tiên không truyền `X-Audio-Id`. BE sinh ID, lưu part đầu tiên và trả ID trong response:
+Mọi request chỉ cần đặt đúng tên file. Part đầu tiên:
 
 ```bash
 curl -sS -X POST 'http://localhost:8080/api/v1/audio' \
   -H 'Content-Type: application/octet-stream' \
-  -H 'X-File-Name: recording.wav' \
+  -H 'X-File-Name: userad_session123_1763800000000_part1.mav' \
   -H 'X-Content-Type: audio/wav' \
-  --data-binary '@part-1'
+  --data-binary '@part1.mav'
 ```
 
-Các request sau truyền lại ID do BE trả. BE tự xác định đây là part tiếp theo và nối vào file cũ:
+Part tiếp theo dùng cùng user, session, timestamp và tăng `partN`; không truyền `X-Audio-Id`:
 
 ```bash
-AUDIO_ID='id-tra-ve-tu-request-dau'
-
 curl -sS -X POST 'http://localhost:8080/api/v1/audio' \
   -H 'Content-Type: application/octet-stream' \
-  -H "X-Audio-Id: $AUDIO_ID" \
-  -H 'X-File-Name: recording.wav' \
+  -H 'X-File-Name: userad_session123_1763800000000_part2.mav' \
   -H 'X-Content-Type: audio/wav' \
-  --data-binary '@part-2'
+  --data-binary '@part2.mav'
 ```
 
-- Không cần gửi sequence hoặc tổng số part.
+- BE dùng `session123` làm khóa của một file audio và dùng `part1`, `part2`... làm thứ tự ghép.
+- Retry cùng part với cùng nội dung trả `duplicate: true` và không nối trùng.
+- Retry cùng số part nhưng nội dung khác trả lỗi conflict thay vì làm hỏng file.
 - Nếu kết nối đứt giữa request, BE xóa part tạm và không thay đổi file đã lưu trước đó.
-- Mỗi ID chỉ nhận tuần tự một part tại một thời điểm.
+- Nếu part đến lệch thứ tự, BE giữ part và chỉ ghép tiếp khi part còn thiếu được gửi lên.
 - Với `?async=true`, request trả `202` và Kafka consumer nối part vào file; byte audio lớn không được đưa vào Kafka.
-- Nếu BE đã nối part nhưng điện thoại không nhận được response và gửi lại cùng dữ liệu, part đó có thể bị nối trùng vì request không có sequence/idempotency key.

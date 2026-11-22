@@ -7,6 +7,7 @@ import java.util.UUID;
 
 public record AudioStatusResponse(
         UUID audioId,
+        String sessionId,
         String status,
         String originalFilename,
         String contentType,
@@ -17,7 +18,7 @@ public record AudioStatusResponse(
         Instant completedAt
 ) {
     public static AudioStatusResponse from(AudioUpload upload) {
-        return new AudioStatusResponse(upload.getId(), upload.getStatus().name(), upload.getOriginalFilename(),
+        return new AudioStatusResponse(upload.getId(), upload.getSessionId(), upload.getStatus().name(), upload.getOriginalFilename(),
                 upload.getContentType(), upload.getTotalBytes(), upload.getChunkCount(), upload.getErrorMessage(),
                 upload.getCreatedAt(), upload.getCompletedAt());
     }

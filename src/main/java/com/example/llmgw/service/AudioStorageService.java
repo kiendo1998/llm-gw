@@ -13,10 +13,14 @@ import java.nio.file.*;
 import java.security.*;
 import java.util.HexFormat;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 public class AudioStorageService {
     private static final int BUFFER_SIZE = 64 * 1024;
+    private static final Pattern PART_FILENAME = Pattern.compile(
+            "^(?<user>[^_]+)_(?<session>[A-Za-z0-9.-]+)_(?<timestamp>\\d+)_part(?<part>[1-9]\\d*)\\.(?<extension>[A-Za-z0-9]+)$",
+            Pattern.CASE_INSENSITIVE);
 
     private final AudioUploadRepository uploads;
     private final AudioChunkRepository chunks;
@@ -29,27 +33,47 @@ public class AudioStorageService {
     }
 
     @Transactional
-    public AudioUpload createOrGet(UUID requestedId, String originalFilename, String contentType) {
+    public AudioIntake createOrGetByPartFilename(String originalFilename, String contentType) {
         var filename = safeFilename(originalFilename);
+        var match = PART_FILENAME.matcher(filename);
+        if (!match.matches()) {
+            throw new IllegalArgumentException(
+                    "X-File-Name must match user_session_timestamp_partN.extension");
+        }
+        var sessionId = match.group("session");
+        var sequence = Integer.parseInt(match.group("part")) - 1;
+        var outputFilename = match.group("user") + "_" + sessionId + "_" + match.group("timestamp")
+                + "." + match.group("extension");
         var type = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
-        var id = requestedId == null ? UUID.randomUUID() : requestedId;
-        var existing = uploads.findById(id);
+        var existing = uploads.findBySessionId(sessionId);
         if (existing.isPresent()) {
             var upload = existing.get();
-            if (!upload.getOriginalFilename().equals(filename)) {
-                throw new IllegalArgumentException("Audio ID already exists with different file metadata");
+            if (!upload.getOriginalFilename().equals(outputFilename)) {
+                throw new IllegalArgumentException("Session already exists with different file metadata");
             }
             upload.resume();
-            return upload;
+            return new AudioIntake(upload, sequence);
         }
-        var upload = uploads.save(AudioUpload.create(id, filename, type));
-        createDirectories(uploadDirectory(upload.getId()).resolve(".parts"));
-        return upload;
+        var upload = uploads.save(AudioUpload.create(UUID.randomUUID(), sessionId, outputFilename, type));
+        createDirectories(uploadDirectory(upload).resolve(".parts"));
+        return new AudioIntake(upload, sequence);
     }
+
+    public record AudioIntake(AudioUpload upload, int sequence) {}
 
     @Transactional(readOnly = true)
     public AudioUpload get(UUID id) {
         return uploads.findById(id).orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
+    }
+
+    @Transactional(readOnly = true)
+    public AudioUpload getByIdOrSession(String reference) {
+        var bySession = uploads.findBySessionId(reference);
+        if (bySession.isPresent()) return bySession.get();
+        try { return get(UUID.fromString(reference)); }
+        catch (IllegalArgumentException ignored) {
+            throw new EntityNotFoundException("Audio session not found: " + reference);
+        }
     }
 
     @Transactional
@@ -75,15 +99,13 @@ public class AudioStorageService {
     }
 
     @Transactional
-    public StoredPart storeNextPart(UUID id, InputStream input) {
+    public StoredPart storePart(UUID id, int sequence, InputStream input) {
         var upload = uploads.findByIdForUpdate(id)
                 .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
         if (upload.getStatus() != AudioUploadStatus.UPLOADING) {
             throw new IllegalStateException("Audio upload does not accept a new part yet");
         }
-        var sequence = upload.getChunkCount();
-
-        var partDirectory = uploadDirectory(id).resolve(".parts");
+        var partDirectory = uploadDirectory(upload).resolve(".parts");
         createDirectories(partDirectory);
         var temp = partDirectory.resolve(sequence + ".part.tmp-" + UUID.randomUUID());
         try {
@@ -93,12 +115,21 @@ public class AudioStorageService {
                  var digestInput = new DigestInputStream(input, digest)) {
                 size = copyWithLimit(digestInput, output, properties.storage().maxChunkBytes());
             }
+            var sha256 = HexFormat.of().formatHex(digest.digest());
+            var existing = chunks.findByUploadIdAndSequenceNumber(id, sequence);
+            if (existing.isPresent()) {
+                Files.deleteIfExists(temp);
+                var saved = existing.get();
+                if (saved.getSizeBytes() != size || !saved.getSha256().equals(sha256)) {
+                    throw new IllegalArgumentException("Part " + (sequence + 1) + " was already uploaded with different content");
+                }
+                return new StoredPart(sequence, size, sha256, true);
+            }
             var target = partDirectory.resolve(sequence + ".part");
             Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
-            var sha256 = HexFormat.of().formatHex(digest.digest());
             chunks.save(AudioChunk.create(id, sequence, size, sha256, target.toAbsolutePath().toString()));
             upload.addChunk(size);
-            return new StoredPart(sequence, size, sha256);
+            return new StoredPart(sequence, size, sha256, false);
         } catch (IOException | NoSuchAlgorithmException e) {
             try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
             throw new IllegalStateException("Cannot store audio chunk", e);
@@ -108,33 +139,37 @@ public class AudioStorageService {
         }
     }
 
-    public record StoredPart(int sequence, long sizeBytes, String sha256) {}
+    public record StoredPart(int sequence, long sizeBytes, String sha256, boolean duplicate) {}
 
     @Transactional
     public AudioUpload completePending(UUID id) {
         var upload = uploads.findByIdForUpdate(id)
                 .orElseThrow(() -> new EntityNotFoundException("Audio upload not found: " + id));
         var storedChunks = chunks.findByUploadIdOrderBySequenceNumber(id);
-        for (int i = 0; i < storedChunks.size(); i++) {
-            if (storedChunks.get(i).getSequenceNumber() != i) {
-                throw new IllegalStateException("Missing audio chunk sequence " + i);
-            }
-        }
-
-        var directory = uploadDirectory(id);
+        var directory = uploadDirectory(upload);
         var target = directory.resolve(upload.getOriginalFilename());
         var firstPending = upload.getLastSequence() == null ? 0 : upload.getLastSequence() + 1;
+        var lastContiguous = firstPending - 1;
+        for (var part : storedChunks) {
+            if (part.getSequenceNumber() < firstPending) continue;
+            if (part.getSequenceNumber() != lastContiguous + 1) break;
+            lastContiguous = part.getSequenceNumber();
+        }
         var originalSize = existingSize(target);
         try (var output = new BufferedOutputStream(Files.newOutputStream(target,
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
-            for (int i = firstPending; i < storedChunks.size(); i++) {
-                Files.copy(Path.of(storedChunks.get(i).getStoragePath()), output);
+            for (var part : storedChunks) {
+                if (part.getSequenceNumber() >= firstPending && part.getSequenceNumber() <= lastContiguous) {
+                    Files.copy(Path.of(part.getStoragePath()), output);
+                }
             }
         } catch (IOException e) {
             truncate(target, originalSize);
             throw new IllegalStateException("Cannot append audio part", e);
         }
-        upload.complete(storedChunks.size() - 1, target.toAbsolutePath().toString());
+        var allPartsApplied = !storedChunks.isEmpty()
+                && lastContiguous == storedChunks.getLast().getSequenceNumber();
+        upload.progress(lastContiguous, target.toAbsolutePath().toString(), allPartsApplied);
         return upload;
     }
 
@@ -167,8 +202,9 @@ public class AudioStorageService {
         }
     }
 
-    private Path uploadDirectory(UUID id) {
-        return properties.storage().root().toAbsolutePath().normalize().resolve(id.toString());
+    private Path uploadDirectory(AudioUpload upload) {
+        var folder = upload.getSessionId() == null ? upload.getId().toString() : upload.getSessionId();
+        return properties.storage().root().toAbsolutePath().normalize().resolve(folder);
     }
 
     private String safeFilename(String original) {

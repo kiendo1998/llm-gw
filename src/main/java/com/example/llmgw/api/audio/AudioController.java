@@ -20,25 +20,25 @@ public class AudioController {
     @PostMapping(consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<AudioUploadResult> upload(
             @RequestParam(name = "async", defaultValue = "false") boolean async,
-            @RequestHeader(value = "X-Audio-Id", required = false) UUID requestedAudioId,
             @RequestHeader("X-File-Name") String originalFilename,
             @RequestHeader(value = "X-Content-Type", defaultValue = "application/octet-stream") String contentType,
             HttpServletRequest request) throws IOException {
-        var upload = audioStorage.createOrGet(requestedAudioId, originalFilename, contentType);
-        var stored = audioStorage.storeNextPart(upload.getId(), request.getInputStream());
+        var intake = audioStorage.createOrGetByPartFilename(originalFilename, contentType);
+        var upload = intake.upload();
+        var stored = audioStorage.storePart(upload.getId(), intake.sequence(), request.getInputStream());
         upload = async ? audioStorage.enqueue(upload.getId()) : audioStorage.completePending(upload.getId());
-        var response = AudioUploadResult.from(upload, stored.sequence(), async);
+        var response = AudioUploadResult.from(upload, stored.sequence() + 1, stored.duplicate(), async);
         return async ? ResponseEntity.accepted().body(response) : ResponseEntity.ok(response);
     }
 
     @GetMapping(value = "/{audioId}/status", produces = MediaType.APPLICATION_JSON_VALUE)
-    AudioStatusResponse status(@PathVariable UUID audioId) {
-        return AudioStatusResponse.from(audioStorage.get(audioId));
+    AudioStatusResponse status(@PathVariable String audioId) {
+        return AudioStatusResponse.from(audioStorage.getByIdOrSession(audioId));
     }
 
     @GetMapping("/{audioId}/download")
-    ResponseEntity<InputStreamResource> download(@PathVariable UUID audioId) throws IOException {
-        var upload = audioStorage.get(audioId);
+    ResponseEntity<InputStreamResource> download(@PathVariable String audioId) throws IOException {
+        var upload = audioStorage.getByIdOrSession(audioId);
         var path = audioStorage.completedFile(upload);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(upload.getContentType()))

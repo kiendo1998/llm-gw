@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 public interface AudioUploadRepository extends JpaRepository<AudioUpload, UUID> {
+    Optional<AudioUpload> findBySessionId(String sessionId);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select a from AudioUpload a where a.id = :id")
     Optional<AudioUpload> findByIdForUpdate(@Param("id") UUID id);
